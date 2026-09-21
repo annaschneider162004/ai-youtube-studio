@@ -6,5 +6,13 @@
   "ai_model": "",
   "voice_endpoint": "",
   "voice_api_key": "",
-  "voice_id": ""
+  "voice_id": "",
+  "ffmpeg_path": "ffmpeg",
+  "output_dir": "data/outputs",
+  "locale": "vi-VN",
+  "log_level": "INFO",
+  "notes": [
+    "Do not commit client_secret.json, OAuth tokens or real API keys.",
+    "You can also provide values through environment variables AIYS_* after installation."
+  ]
 }
