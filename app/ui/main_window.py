@@ -48,13 +48,16 @@ class MainWindow(QMainWindow):
         self.pipeline = PipelineManager(db)
         self.setWindowTitle('AI YouTube Studio V5')
         self.resize(1540, 980)
+        self.setMinimumSize(1200, 760)
 
         root = QWidget()
         layout = QHBoxLayout(root)
         self.nav = QListWidget()
+        self.nav.setObjectName('sidebar')
         self.nav.addItems(['Tổng quan', 'Tài khoản', 'Dự án', 'Quy trình V5', 'Xuất bản', 'Phân tích', 'Cài đặt'])
-        self.nav.setFixedWidth(220)
+        self.nav.setFixedWidth(240)
         self.stack = QStackedWidget()
+        self.stack.setObjectName('contentStack')
 
         self.dashboard_page = DashboardPage(db)
         self.accounts_page = AccountsPage(db, self.refresh_all)
@@ -80,10 +83,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.nav)
         layout.addWidget(self.stack, 1)
         self.setCentralWidget(root)
+        self.apply_theme()
         self.nav.setCurrentRow(0)
         self.refresh_all()
 
     def read_settings(self):
+        data_root = Path(os.environ.get('AIYS_DATA_DIR', 'data')).expanduser()
+        output_default = str((data_root / 'outputs').resolve())
         defaults = {
             'google_client_secret': os.environ.get('AIYS_GOOGLE_CLIENT_SECRET', 'data/client_secret.json'),
             'ai_endpoint': os.environ.get('AIYS_AI_ENDPOINT', ''),
@@ -93,7 +99,7 @@ class MainWindow(QMainWindow):
             'voice_api_key': os.environ.get('AIYS_VOICE_API_KEY', ''),
             'voice_id': os.environ.get('AIYS_VOICE_ID', ''),
             'ffmpeg_path': os.environ.get('AIYS_FFMPEG_PATH', 'ffmpeg'),
-            'output_dir': os.environ.get('AIYS_OUTPUT_DIR', str(Path('data/outputs').resolve())),
+            'output_dir': os.environ.get('AIYS_OUTPUT_DIR', output_default),
             'locale': os.environ.get('AIYS_LOCALE', 'vi-VN'),
             'log_level': os.environ.get('AIYS_LOG_LEVEL', 'INFO'),
         }
@@ -103,6 +109,91 @@ class MainWindow(QMainWindow):
         for page in self.pages:
             if hasattr(page, 'refresh'):
                 page.refresh()
+
+    def apply_theme(self):
+        self.setStyleSheet(
+            '''
+            QWidget {
+                background: #070b14;
+                color: #d9efff;
+                font-size: 13px;
+            }
+            #sidebar {
+                background: #0e1526;
+                border: 1px solid #183053;
+                border-radius: 12px;
+                outline: 0;
+            }
+            #sidebar::item {
+                padding: 12px 10px;
+                border-radius: 8px;
+                margin: 4px;
+            }
+            #sidebar::item:selected {
+                background: #1a2c4e;
+                color: #70f6ff;
+                border: 1px solid #2f86ff;
+            }
+            QGroupBox {
+                border: 1px solid #20395f;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding: 10px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                left: 10px;
+                padding: 0 4px;
+            }
+            QLineEdit, QPlainTextEdit, QTextEdit, QComboBox, QDateTimeEdit, QTableWidget {
+                background: #0c1220;
+                border: 1px solid #2c4268;
+                border-radius: 8px;
+                padding: 6px;
+                selection-background-color: #224b78;
+            }
+            QPushButton {
+                background: #14233d;
+                border: 1px solid #2c5385;
+                border-radius: 8px;
+                padding: 8px 12px;
+                color: #cde6ff;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #1b3256; border-color: #45d2ff; }
+            QPushButton:pressed { background: #122844; }
+            QTableWidget {
+                gridline-color: #1e3559;
+            }
+            QHeaderView::section {
+                background: #14213a;
+                color: #87c9ff;
+                border: 0;
+                padding: 6px;
+            }
+            QProgressBar {
+                border: 1px solid #2f4c73;
+                border-radius: 8px;
+                background: #09111f;
+                text-align: center;
+                color: #dbf9ff;
+            }
+            QProgressBar::chunk {
+                background: #00d2a8;
+                border-radius: 8px;
+            }
+            QLabel#statusBadge {
+                border: 1px solid #2f5f8f;
+                border-radius: 9px;
+                padding: 4px 10px;
+                font-weight: 700;
+                max-width: 280px;
+            }
+            QLabel#statusBadge[state="ok"] { color: #66f7cf; border-color: #228a66; background: #0f2a23; }
+            QLabel#statusBadge[state="busy"] { color: #72f0ff; border-color: #2b8da9; background: #0f2331; }
+            QLabel#statusBadge[state="warn"] { color: #ff7cf0; border-color: #8d3fb0; background: #231738; }
+            '''
+        )
 
 
 class DashboardPage(QWidget):
@@ -121,8 +212,14 @@ class DashboardPage(QWidget):
         )
         self.stats = QLabel()
         self.status_overview = QLabel()
+        self.control_badge = QLabel('CONTROL CENTER')
+        self.control_badge.setObjectName('statusBadge')
+        self.control_badge.setProperty('state', 'ok')
+        self.pipeline_panel = QTextEdit()
+        self.pipeline_panel.setReadOnly(True)
         layout.addWidget(self.stats)
         layout.addWidget(self.status_overview)
+        layout.addWidget(self.control_badge)
         safety = QGroupBox('Nguyên tắc an toàn')
         safety_layout = QVBoxLayout(safety)
         for line in [
@@ -135,6 +232,10 @@ class DashboardPage(QWidget):
         ]:
             safety_layout.addWidget(QLabel(f'• {line}'))
         layout.addWidget(safety)
+        pipeline_box = QGroupBox('Workflow pipeline monitor')
+        pipeline_layout = QVBoxLayout(pipeline_box)
+        pipeline_layout.addWidget(self.pipeline_panel)
+        layout.addWidget(pipeline_box, 1)
         layout.addStretch()
 
     def refresh(self):
@@ -149,6 +250,26 @@ class DashboardPage(QWidget):
             status_counts[row['status']] = status_counts.get(row['status'], 0) + 1
         summary = ', '.join(f'{key}: {value}' for key, value in sorted(status_counts.items())) or 'Chưa có project.'
         self.status_overview.setText(f'Trạng thái workflow: {summary}')
+        active = status_counts.get('processing', 0)
+        failed = status_counts.get('failed', 0)
+        if failed:
+            state, text = 'warn', f'FAILED: {failed} project'
+        elif active:
+            state, text = 'busy', f'RUNNING: {active} pipeline'
+        else:
+            state, text = 'ok', 'ALL SYSTEMS READY'
+        self.control_badge.setProperty('state', state)
+        self.control_badge.style().unpolish(self.control_badge)
+        self.control_badge.style().polish(self.control_badge)
+        self.control_badge.setText(text)
+
+        lines = []
+        for row in projects[:8]:
+            lines.append(
+                f"[{row['status']:<11}] {row['name']} | step={row['workflow_step']} | "
+                f"progress={row['progress']}% | safety={row['safety_status']}"
+            )
+        self.pipeline_panel.setPlainText('\n'.join(lines) if lines else 'Chưa có project để hiển thị pipeline.')
 
 
 class AccountsPage(QWidget):
@@ -683,7 +804,7 @@ class SettingsPage(QWidget):
             ('voice_api_key', 'Voice API key', ''),
             ('voice_id', 'Voice ID', ''),
             ('ffmpeg_path', 'FFmpeg path', 'ffmpeg'),
-            ('output_dir', 'Output directory', str(Path('data/outputs').resolve())),
+            ('output_dir', 'Output directory', str((Path(os.environ.get('AIYS_DATA_DIR', 'data')).expanduser() / 'outputs').resolve())),
             ('locale', 'Locale', 'vi-VN'),
             ('log_level', 'Logging level', 'INFO'),
         ]

@@ -19,7 +19,7 @@ def main():
         '--clean',
         '--windowed',
         '--name',
-        'AIYouTubeStudioV5',
+        'AIYouTubeStudio',
         '--collect-all',
         'PySide6',
         '--add-data',
@@ -33,7 +33,7 @@ def main():
         str(root / 'main.py'),
     ]
     PyInstaller.__main__.run(args)
-    print(f'Build hoàn tất tại: {dist_dir}', file=sys.stderr)
+    print(f'Build hoàn tất tại: {dist_dir / "AIYouTubeStudio"}', file=sys.stderr)
 
 
 if __name__ == '__main__':
