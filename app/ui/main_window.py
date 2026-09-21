@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from app.services.google_auth import GoogleAuth
 from app.services.pipeline import PipelineManager
+from app.services.voice import VoiceSettings, convert_audio_format, validate_voice_sample
 from app.services.youtube_service import YouTubeService
 
 
@@ -39,6 +40,20 @@ def parse_tags(value):
 
 def path_text(value):
     return str(value or '')
+
+
+def parse_float_text(value, default):
+    try:
+        return float((value or '').strip())
+    except ValueError:
+        return default
+
+
+def parse_int_text(value, default):
+    try:
+        return int((value or '').strip())
+    except ValueError:
+        return default
 
 
 class MainWindow(QMainWindow):
@@ -54,7 +69,7 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(root)
         self.nav = QListWidget()
         self.nav.setObjectName('sidebar')
-        self.nav.addItems(['Tổng quan', 'Tài khoản', 'Dự án', 'Quy trình V5', 'Xuất bản', 'Phân tích', 'Cài đặt'])
+        self.nav.addItems(['Tổng quan', 'Tài khoản', 'Dự án', 'Quy trình V5', 'Voice Studio', 'Xuất bản', 'Phân tích', 'Cài đặt'])
         self.nav.setFixedWidth(240)
         self.stack = QStackedWidget()
         self.stack.setObjectName('contentStack')
@@ -63,6 +78,7 @@ class MainWindow(QMainWindow):
         self.accounts_page = AccountsPage(db, self.refresh_all)
         self.projects_page = ProjectsPage(db, self.refresh_all)
         self.workflow_page = WorkflowPage(db, self.pipeline, self.read_settings, self.refresh_all)
+        self.voice_page = VoiceStudioPage(db, self.pipeline, self.read_settings, self.refresh_all)
         self.publish_page = PublishPage(db, self.pipeline, self.refresh_all)
         self.analytics_page = AnalyticsPage(db)
         self.settings_page = SettingsPage(db, self.refresh_all)
@@ -72,6 +88,7 @@ class MainWindow(QMainWindow):
             self.accounts_page,
             self.projects_page,
             self.workflow_page,
+            self.voice_page,
             self.publish_page,
             self.analytics_page,
             self.settings_page,
@@ -98,6 +115,7 @@ class MainWindow(QMainWindow):
             'voice_endpoint': os.environ.get('AIYS_VOICE_ENDPOINT', ''),
             'voice_api_key': os.environ.get('AIYS_VOICE_API_KEY', ''),
             'voice_id': os.environ.get('AIYS_VOICE_ID', ''),
+            'voice_http_timeout': os.environ.get('AIYS_VOICE_HTTP_TIMEOUT', '90'),
             'ffmpeg_path': os.environ.get('AIYS_FFMPEG_PATH', 'ffmpeg'),
             'output_dir': os.environ.get('AIYS_OUTPUT_DIR', output_default),
             'locale': os.environ.get('AIYS_LOCALE', 'vi-VN'),
@@ -551,11 +569,13 @@ class WorkflowPage(QWidget):
         self.buttons = {}
         actions = [
             ('generate_script', '1. Tạo script'),
-            ('generate_subtitles', '2. Tạo subtitle'),
-            ('thumbnail_brief', '3. Tạo brief thumbnail'),
-            ('assemble_video', '4. Ghép video'),
-            ('safety_check', '5. Safety check'),
-            ('approve', '6. Human approval'),
+            ('generate_voice', '2. Tạo voice'),
+            ('generate_subtitles', '3. Tạo subtitle'),
+            ('dub_video', '4. Lồng tiếng video'),
+            ('thumbnail_brief', '5. Tạo brief thumbnail'),
+            ('assemble_video', '6. Ghép video tĩnh'),
+            ('safety_check', '7. Safety check'),
+            ('approve', '8. Human approval'),
         ]
         for index, (task_name, label) in enumerate(actions):
             button = QPushButton(label)
@@ -653,6 +673,279 @@ class WorkflowPage(QWidget):
                     indent=2,
                 )
             self.report.setPlainText(report.strip())
+
+
+class VoiceStudioPage(QWidget):
+    def __init__(self, db, pipeline, settings_provider, refresh_all):
+        super().__init__()
+        self.db = db
+        self.pipeline = pipeline
+        self.settings_provider = settings_provider
+        self.refresh_all = refresh_all
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel('Voice Studio'))
+        self.project = QComboBox()
+        self.project.currentIndexChanged.connect(self.load_project)
+        layout.addWidget(self.project)
+
+        form_box = QGroupBox('Thiết lập voice & dubbing')
+        form = QFormLayout(form_box)
+        self.provider = QComboBox()
+        self.provider.addItem('Local Windows SAPI (offline)', 'sapi')
+        self.provider.addItem('HTTP/API provider', 'http')
+        self.provider.currentIndexChanged.connect(self.update_provider_hint)
+        self.voice_profile = QLineEdit()
+        self.language = QLineEdit('vi-VN')
+        self.speed = QLineEdit('1.0')
+        self.pitch = QLineEdit('0.0')
+        self.emotion = QLineEdit()
+        self.pause_ms = QLineEdit('150')
+        self.output_format = QComboBox()
+        self.output_format.addItems(['wav', 'mp3'])
+        self.fit_strategy = QComboBox()
+        self.fit_strategy.addItems(['speed', 'trim', 'warn'])
+        self.sample_path = self._path_field('Mẫu giọng WAV/MP3/M4A/OGG/FLAC')
+        self.text_source_path = self._path_field('Nguồn văn bản .txt/.srt/.vtt')
+        self.video_source_path = self._path_field('Video nguồn để lồng tiếng')
+        self.text_input = QPlainTextEdit()
+        self.text_input.setPlaceholderText('Nhập văn bản tiếng Việt để tạo voice hoặc lưu script riêng cho Voice Studio…')
+        self.authorized = QCheckBox('Tôi xác nhận tôi sở hữu hoặc được ủy quyền sử dụng voice/mẫu giọng này')
+        self.provider_hint = QLabel()
+        self.provider_hint.setWordWrap(True)
+        self.output_path = QLabel('-')
+
+        form.addRow('Provider', self.provider)
+        form.addRow('Voice profile / voice id', self.voice_profile)
+        form.addRow('Ngôn ngữ', self.language)
+        form.addRow('Tốc độ', self.speed)
+        form.addRow('Pitch', self.pitch)
+        form.addRow('Cảm xúc', self.emotion)
+        form.addRow('Khoảng nghỉ (ms)', self.pause_ms)
+        form.addRow('Định dạng output', self.output_format)
+        form.addRow('Fit nếu audio dài hơn timestamp', self.fit_strategy)
+        form.addRow('Mẫu giọng', self.sample_path['row'])
+        form.addRow('Text/subtitle source', self.text_source_path['row'])
+        form.addRow('Video source', self.video_source_path['row'])
+        form.addRow('Văn bản trực tiếp', self.text_input)
+        form.addRow('', self.authorized)
+        form.addRow('Gợi ý provider', self.provider_hint)
+        form.addRow('Output hiện tại', self.output_path)
+        layout.addWidget(form_box)
+
+        buttons = QHBoxLayout()
+        save_button = QPushButton('Lưu Voice Studio')
+        save_button.clicked.connect(self.save_project_voice)
+        preview_button = QPushButton('Preview')
+        preview_button.clicked.connect(lambda: self.start_task('preview_voice'))
+        generate_button = QPushButton('Generate')
+        generate_button.clicked.connect(lambda: self.start_task('generate_voice'))
+        dub_button = QPushButton('Lồng tiếng video')
+        dub_button.clicked.connect(lambda: self.start_task('dub_video'))
+        cancel_button = QPushButton('Cancel')
+        cancel_button.clicked.connect(self.cancel_task)
+        download_wav_button = QPushButton('Download WAV')
+        download_wav_button.clicked.connect(lambda: self.download_audio('wav'))
+        download_mp3_button = QPushButton('Download MP3')
+        download_mp3_button.clicked.connect(lambda: self.download_audio('mp3'))
+        for widget in [save_button, preview_button, generate_button, dub_button, cancel_button, download_wav_button, download_mp3_button]:
+            buttons.addWidget(widget)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
+        self.progress = QProgressBar()
+        self.status = QLabel('-')
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.status)
+        layout.addWidget(self.log, 1)
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh_status)
+        self.timer.start(1000)
+        self.update_provider_hint()
+
+    def _path_field(self, title):
+        field = QLineEdit()
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        button = QPushButton('Browse')
+        button.clicked.connect(lambda: self.pick_file(field, title))
+        row_layout.addWidget(field)
+        row_layout.addWidget(button)
+        return {'field': field, 'row': row}
+
+    def pick_file(self, field, title):
+        file_path, _ = QFileDialog.getOpenFileName(self, title)
+        if file_path:
+            field.setText(file_path)
+
+    def refresh(self):
+        current = self.project.currentData()
+        self.project.blockSignals(True)
+        self.project.clear()
+        for row in self.db.projects():
+            self.project.addItem(f"{row['name']} — {row['status']} — {row['channel_title'] or 'No channel'}", row['id'])
+        self.project.blockSignals(False)
+        if current is not None:
+            index = self.project.findData(current)
+            if index >= 0:
+                self.project.setCurrentIndex(index)
+        if self.project.count() and self.project.currentIndex() < 0:
+            self.project.setCurrentIndex(0)
+        self.load_project()
+        self.refresh_status()
+
+    def current_project(self):
+        project_id = self.project.currentData()
+        return self.db.project(project_id) if project_id else None
+
+    def load_project(self):
+        project = self.current_project()
+        if not project:
+            return
+        settings = VoiceSettings.from_project(project)
+        self.provider.setCurrentIndex(max(self.provider.findData(settings.provider or project['voice_provider'] or 'sapi'), 0))
+        self.voice_profile.setText(settings.voice_profile or project['voice_profile'] or '')
+        self.language.setText(settings.language or 'vi-VN')
+        self.speed.setText(str(settings.speed))
+        self.pitch.setText(str(settings.pitch))
+        self.emotion.setText(settings.emotion or '')
+        self.pause_ms.setText(str(settings.pause_ms))
+        self.output_format.setCurrentIndex(max(self.output_format.findText(settings.output_format or 'wav'), 0))
+        self.fit_strategy.setCurrentIndex(max(self.fit_strategy.findText(settings.fit_strategy or 'speed'), 0))
+        self.sample_path['field'].setText(path_text(settings.sample_path or project['voice_sample_path']))
+        source_path = project['srt_path'] or settings.text_source_path or project['text_source_path'] or ''
+        self.text_source_path['field'].setText(path_text(source_path))
+        self.video_source_path['field'].setText(path_text(project['media_path']))
+        self.text_input.setPlainText(project['script'] or '')
+        self.authorized.setChecked(bool(project['voice_authorized']))
+        self.output_path.setText(project['voice_path'] or '-')
+        self.update_provider_hint()
+
+    def collect_settings(self):
+        return VoiceSettings(
+            provider=self.provider.currentData() or 'sapi',
+            voice_profile=self.voice_profile.text().strip(),
+            language=self.language.text().strip() or 'vi-VN',
+            speed=parse_float_text(self.speed.text(), 1.0),
+            pitch=parse_float_text(self.pitch.text(), 0.0),
+            emotion=self.emotion.text().strip(),
+            pause_ms=parse_int_text(self.pause_ms.text(), 150),
+            output_format=self.output_format.currentText(),
+            clone_enabled=bool(self.sample_path['field'].text().strip()),
+            fit_strategy=self.fit_strategy.currentText(),
+            sample_path=self.sample_path['field'].text().strip(),
+            text_source_path=self.text_source_path['field'].text().strip(),
+        )
+
+    def save_project_voice(self, silent=False):
+        project = self.current_project()
+        if not project:
+            return False
+        settings = self.collect_settings()
+        try:
+            settings.validate(ffmpeg_path=self.settings_provider().get('ffmpeg_path', 'ffmpeg'))
+        except Exception as exc:
+            if not silent:
+                QMessageBox.critical(self, 'Voice Studio', str(exc))
+            else:
+                self.status.setText(str(exc))
+            return False
+        source_path = settings.text_source_path
+        srt_path = source_path if source_path.lower().endswith(('.srt', '.vtt')) else (project['srt_path'] or '')
+        text_source_path = source_path
+        self.db.update_project(
+            project['id'],
+            script=self.text_input.toPlainText().strip(),
+            media_path=self.video_source_path['field'].text().strip(),
+            voice_profile=settings.voice_profile,
+            voice_provider=settings.provider,
+            voice_settings_json=settings.to_json(),
+            voice_sample_path=settings.sample_path,
+            text_source_path=text_source_path,
+            srt_path=srt_path,
+            voice_authorized=1 if self.authorized.isChecked() else 0,
+        )
+        self.refresh_all()
+        if not silent:
+            QMessageBox.information(self, 'Voice Studio', 'Đã lưu thiết lập Voice Studio.')
+        return True
+
+    def start_task(self, task_name):
+        project = self.current_project()
+        if not project:
+            self.status.setText('Hãy chọn project.')
+            return
+        if not self.save_project_voice(silent=True):
+            return
+        try:
+            self.pipeline.start(project['id'], task_name, self.settings_provider())
+            self.status.setText(f'Đã bắt đầu tác vụ: {task_name}')
+            self.refresh_all()
+        except Exception as exc:
+            self.status.setText(str(exc))
+
+    def cancel_task(self):
+        project = self.current_project()
+        if not project:
+            return
+        self.pipeline.cancel(project['id'])
+        self.status.setText('Đã gửi yêu cầu huỷ Voice Studio task.')
+
+    def refresh_status(self):
+        project = self.current_project()
+        if not project:
+            self.progress.setValue(0)
+            self.log.setPlainText('')
+            return
+        project = self.db.project(project['id']) or project
+        latest = self.db.latest_pipeline(project['id'])
+        self.output_path.setText(project['voice_path'] or '-')
+        self.status.setText(
+            f"Voice provider: {project['voice_provider'] or 'sapi'} | workflow: {project['status']} | "
+            f"bước: {project['workflow_step']} | video: {project['video_path'] or '-'} | lỗi: {project['last_error'] or '-'}"
+        )
+        if latest:
+            self.progress.setValue(int(latest['progress'] or 0))
+            self.log.setPlainText('\n'.join(self.db.pipeline_logs(project['id'])[-60:]))
+        else:
+            self.progress.setValue(0)
+            self.log.setPlainText('')
+
+    def update_provider_hint(self):
+        provider = self.provider.currentData() or 'sapi'
+        if provider == 'sapi':
+            self.provider_hint.setText(
+                'Local/offline adapter dùng Windows SAPI. Không cần API key, không hỗ trợ voice cloning, và cần chạy trên Windows có PowerShell/System.Speech.'
+            )
+        else:
+            self.provider_hint.setText(
+                'HTTP/API adapter đọc endpoint và API key từ Settings/env. Nếu chưa cấu hình endpoint/voice id hợp lệ, app sẽ báo lỗi rõ ràng thay vì giả lập audio.'
+            )
+
+    def download_audio(self, extension):
+        project = self.current_project()
+        if not project or not project['voice_path']:
+            QMessageBox.warning(self, 'Voice Studio', 'Chưa có audio output để tải xuống.')
+            return
+        source = Path(project['voice_path'])
+        if not source.exists():
+            QMessageBox.warning(self, 'Voice Studio', f'Không tìm thấy output hiện tại: {source}')
+            return
+        destination, _ = QFileDialog.getSaveFileName(self, f'Lưu file {extension.upper()}', source.stem + f'.{extension}')
+        if not destination:
+            return
+        destination = Path(destination)
+        try:
+            if source.suffix.lower() == f'.{extension}':
+                destination.write_bytes(source.read_bytes())
+            else:
+                convert_audio_format(source, destination, self.settings_provider().get('ffmpeg_path', 'ffmpeg'))
+            QMessageBox.information(self, 'Voice Studio', f'Đã lưu file: {destination}')
+        except Exception as exc:
+            QMessageBox.critical(self, 'Voice Studio', str(exc))
 
 
 class PublishPage(QWidget):
@@ -803,6 +1096,7 @@ class SettingsPage(QWidget):
             ('voice_endpoint', 'Voice endpoint', ''),
             ('voice_api_key', 'Voice API key', ''),
             ('voice_id', 'Voice ID', ''),
+            ('voice_http_timeout', 'Voice HTTP timeout (s)', '90'),
             ('ffmpeg_path', 'FFmpeg path', 'ffmpeg'),
             ('output_dir', 'Output directory', str((Path(os.environ.get('AIYS_DATA_DIR', 'data')).expanduser() / 'outputs').resolve())),
             ('locale', 'Locale', 'vi-VN'),

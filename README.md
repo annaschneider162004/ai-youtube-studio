@@ -10,12 +10,13 @@ This repository now contains an executable-oriented V5 codebase instead of only 
 
 - Giao diện desktop PySide6, ưu tiên tiếng Việt.
 - Google OAuth + YouTube Data API chính thức, không lưu mật khẩu Google.
-- Project Manager lưu topic, script, title, description, tags, media, thumbnail, SRT, video, voice profile, trạng thái workflow, progress và lỗi gần nhất.
-- Pipeline chạy nền cho các bước script/subtitle/thumbnail/video/safety/approval/upload.
+- Project Manager lưu topic, script, title, description, tags, media, thumbnail, SRT/VTT/TXT source, video, voice profile/provider, trạng thái workflow, progress và lỗi gần nhất.
+- Voice Studio mới: nhập text tiếng Việt, chọn provider/voice profile, preview/generate WAV/MP3, upload sample cho voice cloning khi đã xác nhận quyền sử dụng.
+- Pipeline chạy nền cho các bước script/voice/subtitle/dubbing/video/safety/approval/upload.
 - Cancel/retry/log cho từng task; job đang chạy dở được đánh dấu failed rõ ràng khi app mở lại.
-- Subtitle service hỗ trợ tạo SRT, parse/validate SRT + VTT.
+- Subtitle service hỗ trợ tạo SRT, parse/validate SRT + VTT; Voice Studio hỗ trợ dùng `.txt`, `.srt`, `.vtt` để render theo từng câu/timestamp.
 - Safety Center chặn fake engagement, bypass language, title trùng, thiếu xác nhận voice/media rights.
-- FFmpeg assembly có kiểm tra FFmpeg, file input/output và progress message.
+- FFmpeg assembly có kiểm tra FFmpeg, file input/output, progress message, mux audio mới vào video và xuất track WAV/MP3 an toàn.
 - Upload/Schedule qua YouTube Data API với lịch sử upload.
 - Backup/restore SQLite database ngay trong Settings.
 - Script build Windows một lệnh bằng PyInstaller, tạo `AIYouTubeStudio.exe`.
@@ -26,7 +27,7 @@ This repository now contains an executable-oriented V5 codebase instead of only 
 - `app/db.py`: SQLite + migration nhẹ + state cho project/pipeline.
 - `app/ui/main_window.py`: giao diện chính V5.
 - `app/services/ai.py`: adapter AI provider.
-- `app/services/voice.py`: adapter TTS/voice với authorization gate.
+- `app/services/voice.py`: adapter TTS/voice, validation sample/output, subtitle dubbing timeline và authorization gate.
 - `app/services/subtitles.py`: tạo/parse/validate subtitle.
 - `app/services/video_assembler.py`: FFmpeg wrapper.
 - `app/services/safety.py`: safety review.
@@ -61,6 +62,7 @@ Xem `config.example.json`. Có thể nhập cấu hình trong Settings hoặc qu
 - `AIYS_VOICE_ENDPOINT`
 - `AIYS_VOICE_API_KEY`
 - `AIYS_VOICE_ID`
+- `AIYS_VOICE_HTTP_TIMEOUT`
 - `AIYS_FFMPEG_PATH`
 - `AIYS_OUTPUT_DIR`
 - `AIYS_LOCALE`
@@ -68,13 +70,16 @@ Xem `config.example.json`. Có thể nhập cấu hình trong Settings hoặc qu
 
 > Không commit `client_secret.json`, OAuth tokens hoặc API key thật.
 
-## Voice/TTS boundary
+## Voice Studio / Voice-TTS boundary
 
-V5 **không giả vờ** tích hợp provider nếu chưa có API contract/credential thật.
+V5 **không giả vờ** tích hợp provider nếu chưa có API contract/credential thật. Voice Studio mới giữ nguyên nguyên tắc đó nhưng bổ sung luồng chạy được và trung thực hơn:
 
-- App có adapter + settings + authorization gate.
-- Nếu chưa cấu hình provider hợp lệ, UI sẽ báo rõ rằng người dùng cần tự cung cấp provider chính thức.
-- Render TTS theo từng câu subtitle chỉ được bật khi adapter/provider thực tế khai báo hỗ trợ.
+- **Local/offline adapter**: dùng **Windows SAPI** cho bản `.exe`/Windows khi máy có PowerShell + `System.Speech`; không cần API key, không nhúng model weights, không hỗ trợ voice cloning.
+- **HTTP/API adapter**: cấu hình qua `AIYS_VOICE_ENDPOINT`, `AIYS_VOICE_API_KEY`, `AIYS_VOICE_ID` hoặc Settings; app chỉ gửi request khi endpoint được cấu hình rõ ràng.
+- **Authorization gate bắt buộc**: voice/TTS và đặc biệt là voice cloning chỉ chạy khi người dùng tick xác nhận họ sở hữu hoặc được ủy quyền sử dụng voice/mẫu giọng.
+- **Upload sample**: kiểm tra định dạng, kích thước, thời lượng; không commit sample thật vào repo.
+- **Subtitle dubbing**: `.srt`/`.vtt` render theo từng cue/timestamp, giữ khoảng lặng, cảnh báo audio dài hơn segment và hỗ trợ fit bằng `speed` hoặc `trim`. `.txt` được chia câu tuần tự để tạo track dubbing không timestamp.
+- Nếu provider chưa cấu hình hoặc không hỗ trợ tính năng nào đó, UI sẽ báo lỗi hướng dẫn thay vì tạo audio giả.
 
 ## Windows build / Packaging
 
@@ -106,6 +111,7 @@ Kết quả build nằm trong `dist/AIYouTubeStudio/` với file chạy chính `
 - Không đóng gói `client_secret.json`.
 - Không đóng gói token hoặc API key thật.
 - `config.example.json` và README được đưa vào build để người dùng có template cấu hình.
+- Không đóng gói model weights lớn, voice sample thật hoặc secret cho provider voice.
 - CI build chạy trên `windows-latest` để tạo artifact `.exe` thật.
 
 ## V4 compatibility checklist
@@ -137,7 +143,9 @@ python -m unittest discover -s tests -v
 - **FFmpeg chưa cài**: cấu hình `ffmpeg_path` trong Settings.
 - **Safety blocked**: kiểm tra duplicate title, quyền voice/media, hoặc metadata nguy hiểm.
 - **Upload bị từ chối**: kiểm tra hạn mức API, trạng thái project đã `approved`, và `publishAt` có hợp lệ không.
-- **TTS chưa chạy**: đây là adapter an toàn; cần provider thật và xác nhận quyền sử dụng voice.
+- **TTS chưa chạy**: kiểm tra provider đã cấu hình hay chưa. Local/offline chỉ hỗ trợ Windows SAPI; HTTP/API cần endpoint/voice id thật.
+- **Voice cloning bị chặn**: cần upload sample hợp lệ và tick xác nhận quyền sở hữu/ủy quyền giọng nói.
+- **Dubbing lệch timestamp**: chọn `fit strategy = speed` hoặc `trim`, đồng thời kiểm tra FFmpeg/ffprobe đã cài.
 
 ## Giới hạn thực tế / Real limitations
 

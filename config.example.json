@@ -7,12 +7,15 @@
   "voice_endpoint": "",
   "voice_api_key": "",
   "voice_id": "",
+  "voice_http_timeout": "90",
   "ffmpeg_path": "ffmpeg",
   "output_dir": "data/outputs",
   "locale": "vi-VN",
   "log_level": "INFO",
   "notes": [
-    "Do not commit client_secret.json, OAuth tokens or real API keys.",
-    "You can also provide values through environment variables AIYS_* after installation."
+    "Do not commit client_secret.json, OAuth tokens, real API keys, voice samples, or model weights.",
+    "Voice Studio stores provider secrets in env/settings, not in project records.",
+    "Local/offline voice generation uses Windows SAPI in the packaged .exe when available; HTTP/API dubbing requires your own provider endpoint.",
+    "If your local/API provider needs external model weights, install/download them outside the repository."
   ]
 }
