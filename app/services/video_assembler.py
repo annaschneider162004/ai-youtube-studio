@@ -107,7 +107,7 @@ class VideoAssembler:
             '-i',
             str(audio),
             '-map',
-            '0:v',
+            '0:v?',
             '-map',
             '0:s?',
             '-map',

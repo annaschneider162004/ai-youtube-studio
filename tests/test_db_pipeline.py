@@ -135,6 +135,53 @@ class DatabaseAndPipelineTests(unittest.TestCase):
             self.assertTrue(project['voice_path'].endswith('.wav'))
             self.assertTrue(Path(project['voice_path']).exists())
 
+    def test_generate_voice_pipeline_uses_text_source_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = Database(Path(temp_dir) / 'studio.db')
+            account_id = db.add_account('user@example.com', 'channel-1', 'Test Channel', '{}')
+            project_id = db.add_project(account_id, 'Project Text Source', 'Topic Text Source')
+            text_source = Path(temp_dir) / 'voice.txt'
+            text_source.write_text('Nội dung từ file txt', encoding='utf-8')
+            db.update_project(
+                project_id,
+                script='Script cũ',
+                text_source_path=str(text_source),
+                voice_authorized=1,
+                voice_provider='sapi',
+                voice_settings_json=json.dumps(
+                    {
+                        'provider': 'sapi',
+                        'voice_profile': '',
+                        'language': 'vi-VN',
+                        'speed': 1.0,
+                        'pitch': 0.0,
+                        'emotion': '',
+                        'pause_ms': 150,
+                        'output_format': 'wav',
+                        'clone_enabled': False,
+                        'fit_strategy': 'speed',
+                        'sample_path': '',
+                        'text_source_path': str(text_source),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            pipeline = PipelineManager(db)
+
+            def fake_generate_audio(_service, text, output_path, settings, source_path='', **kwargs):
+                self.assertEqual(str(text_source), source_path)
+                self.assertEqual(str(text_source), settings.text_source_path)
+                self._write_wav(output_path, duration_ms=500)
+                return Path(output_path)
+
+            with patch('app.services.pipeline.VoiceStudioService.generate_audio', autospec=True, side_effect=fake_generate_audio):
+                pipeline.start(project_id, 'generate_voice', {'output_dir': temp_dir})
+                pipeline._threads[project_id].join(timeout=10)
+
+            project = db.project(project_id)
+            self.assertEqual(str(text_source), project['text_source_path'])
+            self.assertEqual('completed', db.latest_pipeline(project_id)['status'])
+
     def test_preview_voice_preserves_existing_status(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db = Database(Path(temp_dir) / 'studio.db')

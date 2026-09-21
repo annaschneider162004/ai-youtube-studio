@@ -855,7 +855,7 @@ class VoiceStudioPage(QWidget):
             return False
         source_path = settings.text_source_path
         srt_path = source_path if source_path.lower().endswith(('.srt', '.vtt')) else ''
-        text_source_path = source_path if source_path.lower().endswith('.txt') else ''
+        text_source_path = source_path
         self.db.update_project(
             project['id'],
             script=self.text_input.toPlainText().strip(),

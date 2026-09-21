@@ -624,11 +624,19 @@ def split_text_fragments(text, max_chars=160):
         part = re.sub(r'\s+', ' ', part or '').strip()
         if not part:
             continue
-        if len(part) <= max_chars:
-            fragments.append(part)
-        else:
-            fragments.extend(split_script_lines(part, max_chars=max_chars))
-    return fragments or ['']
+        candidates = [part] if len(part) <= max_chars else split_script_lines(part, max_chars=max_chars)
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if not candidate:
+                continue
+            if len(candidate) <= max_chars:
+                fragments.append(candidate)
+                continue
+            start = 0
+            while start < len(candidate):
+                fragments.append(candidate[start:start + max_chars].strip())
+                start += max_chars
+    return [fragment for fragment in fragments if fragment] or ['']
 
 
 def build_segments_from_plain_text(text, pause_ms=150, max_chars=160):
