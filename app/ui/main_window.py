@@ -847,8 +847,6 @@ class VoiceStudioPage(QWidget):
         settings = self.collect_settings()
         try:
             settings.validate(ffmpeg_path=self.settings_provider().get('ffmpeg_path', 'ffmpeg'))
-            if settings.sample_path:
-                validate_voice_sample(settings.sample_path, ffmpeg_path=self.settings_provider().get('ffmpeg_path', 'ffmpeg'))
         except Exception as exc:
             if not silent:
                 QMessageBox.critical(self, 'Voice Studio', str(exc))

@@ -805,12 +805,17 @@ def probe_audio_duration_ms(path, ffmpeg_path='ffmpeg'):
 def resolve_ffprobe(ffmpeg_path='ffmpeg'):
     ffmpeg_bin = Path(ffmpeg_path)
     if ffmpeg_bin.exists():
-        sibling = ffmpeg_bin.with_name('ffprobe')
-        if sibling.exists():
-            return str(sibling)
-        sibling_exe = ffmpeg_bin.with_name('ffprobe.exe')
-        if sibling_exe.exists():
-            return str(sibling_exe)
+        stem = ffmpeg_bin.stem
+        sibling_stem = stem.replace('ffmpeg', 'ffprobe') if 'ffmpeg' in stem else 'ffprobe'
+        candidates = []
+        if ffmpeg_bin.suffix:
+            candidates.append(ffmpeg_bin.with_name(f'{sibling_stem}{ffmpeg_bin.suffix}'))
+        candidates.append(ffmpeg_bin.with_name(sibling_stem))
+        candidates.append(ffmpeg_bin.with_name('ffprobe.exe'))
+        candidates.append(ffmpeg_bin.with_name('ffprobe'))
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
     return shutil.which('ffprobe') or shutil.which('ffprobe.exe')
 
 

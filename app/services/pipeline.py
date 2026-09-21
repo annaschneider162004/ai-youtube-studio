@@ -85,8 +85,6 @@ class PipelineManager:
                     final_status = 'scheduled' if settings.get('publish_at') else 'published'
                     if project_row:
                         self.db.update_project(project_id, status=final_status, workflow_step='upload', progress=100)
-                elif task_name == 'preview_voice':
-                    self.db.update_project(project_id, status=final_status, workflow_step=final_step, progress=100)
                 self.db.update_pipeline_run(run_id, status='completed', progress=100, message='Hoàn tất.')
                 self.db.update_project(project_id, status=final_status, progress=100, workflow_step=final_step)
         except CancelledError as exc:
@@ -129,6 +127,14 @@ class PipelineManager:
         stem = safe_slug(project_name or f'project-{project_id}', default=f'project-{project_id}')
         return output_dir / f'{stem}_{project_id}_{label}{suffix}'
 
+    def _audio_result(self, run_id, result):
+        if isinstance(result, dict):
+            warnings = result.get('warnings') or []
+            if warnings:
+                self.db.append_pipeline_log(run_id, 'Cảnh báo audio: ' + ' | '.join(warnings))
+            return Path(result['audio_path'])
+        return Path(result)
+
     def _execute(self, run_id, project_id, task_name, settings, temp_dir):
         project = self.db.project(project_id)
         if not project:
@@ -165,7 +171,7 @@ class PipelineManager:
             )
             self._check_cancel(project_id)
             source_path = project['srt_path'] or project['text_source_path'] or voice_settings.text_source_path or ''
-            audio_path = service.generate_audio(
+            audio_result = service.generate_audio(
                 project['script'],
                 output_path,
                 voice_settings,
@@ -175,6 +181,7 @@ class PipelineManager:
                 progress_callback=lambda percent, message: self._update(run_id, project_id, percent, message, 'voice'),
                 cancel_callback=lambda: self._check_cancel(project_id),
             )
+            audio_path = self._audio_result(run_id, audio_result)
             self.db.update_project(
                 project_id,
                 voice_path=str(audio_path),
@@ -266,7 +273,7 @@ class PipelineManager:
                 service = VoiceStudioService(provider, settings.get('ffmpeg_path', 'ffmpeg'))
                 output_voice = temp_dir / f'project_{project_id}_voice.{voice_settings.output_format}'
                 source_path = project['srt_path'] or project['text_source_path'] or voice_settings.text_source_path or ''
-                generated = service.generate_audio(
+                generated_result = service.generate_audio(
                     project['script'],
                     output_voice,
                     voice_settings,
@@ -275,6 +282,7 @@ class PipelineManager:
                     progress_callback=lambda percent, message: self._update(run_id, project_id, percent, message, 'voice'),
                     cancel_callback=lambda: self._check_cancel(project_id),
                 )
+                generated = self._audio_result(run_id, generated_result)
                 self.db.update_project(project_id, voice_path=str(generated))
                 project = self.db.project(project_id)
             output_dir = self._output_dir(settings)
