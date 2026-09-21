@@ -538,6 +538,8 @@ def validate_audio_output(path, expect_extension='', ffmpeg_path='ffmpeg'):
     duration_ms = probe_audio_duration_ms(audio_path, ffmpeg_path=ffmpeg_path)
     if audio_path.suffix.lower() == '.wav' and duration_ms is None:
         raise ValueError('Audio output có thời lượng không hợp lệ.')
+    if audio_path.suffix.lower() != '.wav' and duration_ms is None:
+        raise ValueError('Không xác định được thời lượng audio output. Hãy cài FFmpeg/ffprobe hoặc xuất WAV.')
     if duration_ms is not None and duration_ms <= 0:
         raise ValueError('Audio output có thời lượng không hợp lệ.')
     return True

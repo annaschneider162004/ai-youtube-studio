@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 import wave
 from pathlib import Path
 
@@ -38,6 +39,14 @@ class VoiceServiceTests(unittest.TestCase):
             self.assertEqual('.wav', info.extension)
             self.assertGreaterEqual(info.duration_ms, 1100)
 
+    def test_validate_voice_sample_requires_ffprobe_for_non_wav(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sample = Path(temp_dir) / 'sample.mp3'
+            sample.write_bytes(b'fake-mp3')
+            with patch('app.services.voice.resolve_ffprobe', return_value=None):
+                with self.assertRaisesRegex(ValueError, 'Không xác định được thời lượng mẫu giọng'):
+                    validate_voice_sample(sample)
+
     def test_build_timed_segments_from_srt_preserves_timeline(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             subtitle = Path(temp_dir) / 'sample.srt'
@@ -65,6 +74,14 @@ class VoiceServiceTests(unittest.TestCase):
             audio.write_bytes(b'not-a-real-wav')
             with self.assertRaisesRegex(ValueError, 'thời lượng không hợp lệ'):
                 validate_audio_output(audio, expect_extension='.wav')
+
+    def test_validate_audio_output_requires_ffprobe_for_non_wav(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio = Path(temp_dir) / 'output.mp3'
+            audio.write_bytes(b'fake-mp3')
+            with patch('app.services.voice.resolve_ffprobe', return_value=None):
+                with self.assertRaisesRegex(ValueError, 'Không xác định được thời lượng audio output'):
+                    validate_audio_output(audio, expect_extension='.mp3')
 
 
 if __name__ == '__main__':
