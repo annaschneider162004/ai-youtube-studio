@@ -187,9 +187,13 @@ finally {
                 'Bypass',
                 '-File',
                 str(script_path),
+                '-TextPath',
                 str(text_path),
+                '-OutputPath',
                 str(target_wav),
+                '-VoiceName',
                 settings.voice_profile or self.voice_id,
+                '-Rate',
                 str(rate),
             ]
             completed = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace')
@@ -315,7 +319,6 @@ class VoiceProvider:
         if subtitles and not self.supports_segmented_srt:
             raise NotImplementedError('Provider hiện tại chưa khai báo hỗ trợ render theo từng câu subtitle.')
         active_settings = settings or VoiceSettings(provider=self.provider_type, voice_profile=self._adapter.voice_id)
-        active_settings.validate(ffmpeg_path=self._adapter.ffmpeg_path)
         if not self.configured():
             if self.provider_type == 'sapi':
                 raise NotImplementedError(
@@ -323,6 +326,7 @@ class VoiceProvider:
                     'Hãy chạy trên Windows hoặc chọn HTTP provider.'
                 )
             raise NotImplementedError('Chưa cấu hình adapter TTS chính thức trong Settings hoặc biến môi trường.')
+        active_settings.validate(ffmpeg_path=self._adapter.ffmpeg_path)
         return self._adapter.generate(
             text,
             output_path,

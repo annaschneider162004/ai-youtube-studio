@@ -81,10 +81,8 @@ class PipelineManager:
                 self._execute(run_id, project_id, task_name, settings, Path(temp_dir))
                 final_status, final_step = self._completion_state(task_name, original_status, original_step)
                 if task_name == 'upload_video':
-                    project_row = self.db.project(project_id)
                     final_status = 'scheduled' if settings.get('publish_at') else 'published'
-                    if project_row:
-                        self.db.update_project(project_id, status=final_status, workflow_step='upload', progress=100)
+                    final_step = 'upload'
                 self.db.update_pipeline_run(run_id, status='completed', progress=100, message='Hoàn tất.')
                 self.db.update_project(project_id, status=final_status, progress=100, workflow_step=final_step)
         except CancelledError as exc:

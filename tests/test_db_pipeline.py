@@ -279,6 +279,65 @@ class DatabaseAndPipelineTests(unittest.TestCase):
             self.assertEqual('failed', project['status'])
             self.assertIn('quyền sử dụng voice', latest['message'])
 
+    def test_dub_video_pipeline_updates_audio_video_and_logs_warnings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = Database(Path(temp_dir) / 'studio.db')
+            account_id = db.add_account('user@example.com', 'channel-1', 'Test Channel', '{}')
+            project_id = db.add_project(account_id, 'Project Dub', 'Topic Dub')
+            source_video = Path(temp_dir) / 'source.mp4'
+            source_video.write_bytes(b'fake-video')
+            subtitle_path = Path(temp_dir) / 'dub.srt'
+            subtitle_path.write_text('1\n00:00:00,000 --> 00:00:01,500\nXin chào\n', encoding='utf-8')
+            db.update_project(
+                project_id,
+                script='Xin chào',
+                media_path=str(source_video),
+                srt_path=str(subtitle_path),
+                voice_authorized=1,
+                voice_provider='sapi',
+                voice_settings_json=json.dumps(
+                    {
+                        'provider': 'sapi',
+                        'voice_profile': '',
+                        'language': 'vi-VN',
+                        'speed': 1.0,
+                        'pitch': 0.0,
+                        'emotion': '',
+                        'pause_ms': 150,
+                        'output_format': 'wav',
+                        'clone_enabled': False,
+                        'fit_strategy': 'speed',
+                        'sample_path': '',
+                        'text_source_path': '',
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            pipeline = PipelineManager(db)
+
+            def fake_dub_video(_service, video_path, text, output_audio_path, output_video_path, settings, **kwargs):
+                self._write_wav(output_audio_path, duration_ms=700)
+                Path(output_video_path).write_bytes(b'dubbed-video')
+                return {
+                    'audio_path': Path(output_audio_path),
+                    'video_path': Path(output_video_path),
+                    'warnings': ['audio longer than one segment'],
+                }
+
+            with patch('app.services.pipeline.VoiceStudioService.dub_video', autospec=True, side_effect=fake_dub_video):
+                pipeline.start(project_id, 'dub_video', {'output_dir': temp_dir})
+                pipeline._threads[project_id].join(timeout=10)
+
+            project = db.project(project_id)
+            latest = db.latest_pipeline(project_id)
+            logs = db.pipeline_logs(project_id)
+            self.assertEqual('completed', latest['status'])
+            self.assertEqual('needs_review', project['status'])
+            self.assertEqual('video', project['workflow_step'])
+            self.assertTrue(project['voice_path'].endswith('.wav'))
+            self.assertTrue(project['video_path'].endswith('.mp4'))
+            self.assertTrue(any('Cảnh báo dubbing' in line for line in logs))
+
 
 if __name__ == '__main__':
     unittest.main()
