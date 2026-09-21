@@ -59,6 +59,13 @@ class VoiceServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'đang rỗng'):
                 validate_audio_output(audio, expect_extension='.wav')
 
+    def test_validate_audio_output_rejects_invalid_wav_header(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio = Path(temp_dir) / 'invalid.wav'
+            audio.write_bytes(b'not-a-real-wav')
+            with self.assertRaisesRegex(ValueError, 'thời lượng không hợp lệ'):
+                validate_audio_output(audio, expect_extension='.wav')
+
 
 if __name__ == '__main__':
     unittest.main()

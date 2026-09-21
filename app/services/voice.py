@@ -198,10 +198,10 @@ finally {
                 raise RuntimeError(f'Windows SAPI thất bại: {message or "không rõ nguyên nhân"}')
         if progress_callback:
             progress_callback(80, 'Đã tạo WAV local, đang kiểm tra output…')
-        validate_audio_output(target_wav, expect_extension='.wav')
+        validate_audio_output(target_wav, expect_extension='.wav', ffmpeg_path=self.ffmpeg_path)
         if output_path.suffix.lower() == '.mp3':
             convert_audio_format(target_wav, output_path, self.ffmpeg_path)
-            validate_audio_output(output_path, expect_extension='.mp3')
+            validate_audio_output(output_path, expect_extension='.mp3', ffmpeg_path=self.ffmpeg_path)
             target_wav.unlink(missing_ok=True)
             final_path = output_path
         else:
@@ -279,7 +279,7 @@ class HttpVoiceAdapter(BaseVoiceAdapter):
                 )
         if progress_callback:
             progress_callback(85, 'Đã nhận audio từ HTTP provider, đang kiểm tra output…')
-        validate_audio_output(output_path)
+        validate_audio_output(output_path, ffmpeg_path=self.ffmpeg_path)
         if progress_callback:
             progress_callback(100, f'Đã tạo audio: {output_path}')
         return output_path
@@ -426,12 +426,12 @@ class VoiceStudioService:
                 progress_callback(60, 'Đang ghép các segment theo timestamp…')
             final_wav = output_path if output_path.suffix.lower() == '.wav' else temp_dir / 'final_track.wav'
             compose_timed_track(normalized_segments, final_wav)
-            validate_audio_output(final_wav, expect_extension='.wav')
+            validate_audio_output(final_wav, expect_extension='.wav', ffmpeg_path=self.ffmpeg_path)
             if output_path.suffix.lower() == '.mp3':
                 if progress_callback:
                     progress_callback(80, 'Đang chuyển WAV sang MP3…')
                 convert_audio_format(final_wav, output_path, self.ffmpeg_path)
-                validate_audio_output(output_path, expect_extension='.mp3')
+                validate_audio_output(output_path, expect_extension='.mp3', ffmpeg_path=self.ffmpeg_path)
                 final_path = output_path
             else:
                 final_path = final_wav
@@ -521,7 +521,7 @@ def validate_voice_sample(path, ffmpeg_path='ffmpeg', max_size_bytes=MAX_SAMPLE_
     return VoiceSampleInfo(str(sample), sample.suffix.lower(), size_bytes, duration_ms)
 
 
-def validate_audio_output(path, expect_extension=''):
+def validate_audio_output(path, expect_extension='', ffmpeg_path='ffmpeg'):
     audio_path = Path(path)
     if not audio_path.exists():
         raise FileNotFoundError(f'Không tìm thấy file audio output: {audio_path}')
@@ -531,7 +531,9 @@ def validate_audio_output(path, expect_extension=''):
         raise ValueError(f'Audio output phải có đuôi {expect_extension}, nhận được {audio_path.suffix}.')
     if audio_path.suffix.lower() not in {'.wav', '.mp3'}:
         raise ValueError('Audio output chỉ hỗ trợ WAV hoặc MP3.')
-    duration_ms = probe_audio_duration_ms(audio_path)
+    duration_ms = probe_audio_duration_ms(audio_path, ffmpeg_path=ffmpeg_path)
+    if audio_path.suffix.lower() == '.wav' and duration_ms is None:
+        raise ValueError('Audio output có thời lượng không hợp lệ.')
     if duration_ms is not None and duration_ms <= 0:
         raise ValueError('Audio output có thời lượng không hợp lệ.')
     return True
@@ -771,10 +773,13 @@ def probe_audio_duration_ms(path, ffmpeg_path='ffmpeg'):
     if not audio_path.exists():
         return None
     if audio_path.suffix.lower() == '.wav':
-        with contextlib.closing(wave.open(str(audio_path), 'rb')) as handle:
-            frames = handle.getnframes()
-            rate = handle.getframerate() or 1
-            return int((frames / rate) * 1000)
+        try:
+            with contextlib.closing(wave.open(str(audio_path), 'rb')) as handle:
+                frames = handle.getnframes()
+                rate = handle.getframerate() or 1
+                return int((frames / rate) * 1000)
+        except (wave.Error, EOFError):
+            return None
     ffprobe = resolve_ffprobe(ffmpeg_path)
     if not ffprobe:
         return None

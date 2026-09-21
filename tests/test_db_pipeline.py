@@ -135,6 +135,54 @@ class DatabaseAndPipelineTests(unittest.TestCase):
             self.assertTrue(project['voice_path'].endswith('.wav'))
             self.assertTrue(Path(project['voice_path']).exists())
 
+    def test_preview_voice_preserves_existing_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = Database(Path(temp_dir) / 'studio.db')
+            account_id = db.add_account('user@example.com', 'channel-1', 'Test Channel', '{}')
+            project_id = db.add_project(account_id, 'Project Preview', 'Topic Preview')
+            db.update_project(
+                project_id,
+                script='Preview text',
+                status='needs_review',
+                workflow_step='subtitle',
+                voice_authorized=1,
+                voice_provider='sapi',
+                voice_settings_json=json.dumps(
+                    {
+                        'provider': 'sapi',
+                        'voice_profile': '',
+                        'language': 'vi-VN',
+                        'speed': 1.0,
+                        'pitch': 0.0,
+                        'emotion': '',
+                        'pause_ms': 150,
+                        'output_format': 'wav',
+                        'clone_enabled': False,
+                        'fit_strategy': 'speed',
+                        'sample_path': '',
+                        'text_source_path': '',
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            pipeline = PipelineManager(db)
+
+            def fake_generate_audio(_service, text, output_path, settings, preview=False, **kwargs):
+                self.assertTrue(preview)
+                self._write_wav(output_path, duration_ms=300)
+                return Path(output_path)
+
+            with patch('app.services.pipeline.VoiceStudioService.generate_audio', autospec=True, side_effect=fake_generate_audio):
+                pipeline.start(project_id, 'preview_voice', {'output_dir': temp_dir})
+                pipeline._threads[project_id].join(timeout=10)
+
+            project = db.project(project_id)
+            latest = db.latest_pipeline(project_id)
+            self.assertEqual('completed', latest['status'])
+            self.assertEqual('needs_review', project['status'])
+            self.assertEqual('voice', project['workflow_step'])
+            self.assertTrue(project['voice_path'].endswith('.wav'))
+
 
 if __name__ == '__main__':
     unittest.main()
