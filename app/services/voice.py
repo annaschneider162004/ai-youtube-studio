@@ -661,6 +661,12 @@ def compose_timed_track(items, output_path):
                 writer.writeframes(make_silence_frames(segment.start_ms - cursor_ms, sample_rate, bytes_per_frame))
                 cursor_ms = segment.start_ms
             with wave.open(str(segment_path), 'rb') as segment_wave:
+                if (
+                    segment_wave.getframerate() != sample_rate
+                    or segment_wave.getnchannels() != channels
+                    or segment_wave.getsampwidth() != sample_width
+                ):
+                    raise ValueError('Các segment WAV phải được chuẩn hoá về cùng sample rate/channel/sample width trước khi ghép.')
                 writer.writeframes(segment_wave.readframes(segment_wave.getnframes()))
             cursor_ms = segment.start_ms + actual_ms
             if actual_ms < segment.duration_ms:
@@ -696,6 +702,18 @@ def normalize_audio_to_wav(input_path, output_path, ffmpeg_path='ffmpeg'):
         run_command(cmd, 'Chuẩn hoá WAV bằng FFmpeg thất bại.')
         return output_path
     if input_path.suffix.lower() == '.wav':
+        try:
+            with contextlib.closing(wave.open(str(input_path), 'rb')) as handle:
+                if (
+                    handle.getframerate() != DEFAULT_SAMPLE_RATE
+                    or handle.getnchannels() != DEFAULT_CHANNELS
+                    or handle.getsampwidth() != DEFAULT_SAMPLE_WIDTH
+                ):
+                    raise ValueError(
+                        'FFmpeg chưa sẵn sàng nên chỉ chấp nhận WAV đã chuẩn hoá 16kHz/mono/16-bit cho dubbing timeline.'
+                    )
+        except (wave.Error, EOFError) as exc:
+            raise ValueError('WAV segment không hợp lệ để ghép track.') from exc
         shutil.copyfile(input_path, output_path)
         return output_path
     cmd = [

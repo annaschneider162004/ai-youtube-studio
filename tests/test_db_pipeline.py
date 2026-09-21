@@ -233,6 +233,52 @@ class DatabaseAndPipelineTests(unittest.TestCase):
             self.assertTrue(project['voice_path'].endswith('.wav'))
             self.assertTrue(any('Cảnh báo audio' in line for line in logs))
 
+    def test_generate_voice_pipeline_requires_authorization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = Database(Path(temp_dir) / 'studio.db')
+            account_id = db.add_account('user@example.com', 'channel-1', 'Test Channel', '{}')
+            project_id = db.add_project(account_id, 'Project Unauthorized', 'Topic Unauthorized')
+            db.update_project(
+                project_id,
+                script='Không được phép',
+                voice_authorized=0,
+                voice_provider='sapi',
+                voice_settings_json=json.dumps(
+                    {
+                        'provider': 'sapi',
+                        'voice_profile': '',
+                        'language': 'vi-VN',
+                        'speed': 1.0,
+                        'pitch': 0.0,
+                        'emotion': '',
+                        'pause_ms': 150,
+                        'output_format': 'wav',
+                        'clone_enabled': False,
+                        'fit_strategy': 'speed',
+                        'sample_path': '',
+                        'text_source_path': '',
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            pipeline = PipelineManager(db)
+
+            def fake_generate_audio(_service, text, output_path, settings, authorized=False, **kwargs):
+                if not authorized:
+                    raise PermissionError('Voice/TTS chỉ được chạy khi bạn xác nhận đang sở hữu hoặc có quyền sử dụng voice đó.')
+                self._write_wav(output_path, duration_ms=500)
+                return Path(output_path)
+
+            with patch('app.services.pipeline.VoiceStudioService.generate_audio', autospec=True, side_effect=fake_generate_audio):
+                pipeline.start(project_id, 'generate_voice', {'output_dir': temp_dir})
+                pipeline._threads[project_id].join(timeout=10)
+
+            project = db.project(project_id)
+            latest = db.latest_pipeline(project_id)
+            self.assertEqual('failed', latest['status'])
+            self.assertEqual('failed', project['status'])
+            self.assertIn('quyền sử dụng voice', latest['message'])
+
 
 if __name__ == '__main__':
     unittest.main()

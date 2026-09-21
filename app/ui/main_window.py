@@ -910,6 +910,9 @@ class VoiceStudioPage(QWidget):
         if latest:
             self.progress.setValue(int(latest['progress'] or 0))
             self.log.setPlainText('\n'.join(self.db.pipeline_logs(project['id'])[-60:]))
+        else:
+            self.progress.setValue(0)
+            self.log.setPlainText('')
 
     def update_provider_hint(self):
         provider = self.provider.currentData() or 'sapi'
