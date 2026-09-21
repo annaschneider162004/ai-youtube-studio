@@ -18,7 +18,7 @@ This repository now contains an executable-oriented V5 codebase instead of only 
 - FFmpeg assembly có kiểm tra FFmpeg, file input/output và progress message.
 - Upload/Schedule qua YouTube Data API với lịch sử upload.
 - Backup/restore SQLite database ngay trong Settings.
-- Script build Windows một lệnh bằng PyInstaller.
+- Script build Windows một lệnh bằng PyInstaller, tạo `AIYouTubeStudio.exe`.
 
 ## Kiến trúc / Architecture
 
@@ -78,20 +78,50 @@ V5 **không giả vờ** tích hợp provider nếu chưa có API contract/crede
 
 ## Windows build / Packaging
 
-### One-command build
+### Dùng bản `.exe` (không cần cài Python)
+
+1. Vào tab **Actions** → workflow **Windows Build EXE**.
+2. Mở run thành công và tải artifact `AIYouTubeStudio-windows`.
+3. Giải nén file ZIP.
+4. Chạy trực tiếp `AIYouTubeStudio.exe`.
+
+Khi chạy lần đầu, app tự tạo:
+
+- `data/studio.db`
+- `data/logs/`
+- `data/outputs/`
+- `data/config.example.json` (copy từ template nếu chưa có)
+
+### Build thủ công trên Windows (cho developer)
 
 ```bash
 pip install -r requirements.txt -r requirements-build.txt
 python build_windows.py
 ```
 
-Kết quả build nằm trong `dist/AIYouTubeStudioV5/`.
+Kết quả build nằm trong `dist/AIYouTubeStudio/` với file chạy chính `AIYouTubeStudio.exe`.
 
 ### Ghi chú đóng gói
 
 - Không đóng gói `client_secret.json`.
 - Không đóng gói token hoặc API key thật.
 - `config.example.json` và README được đưa vào build để người dùng có template cấu hình.
+- CI build chạy trên `windows-latest` để tạo artifact `.exe` thật.
+
+## V4 compatibility checklist
+
+- [x] Quản lý nhiều Google/YouTube account.
+- [x] OAuth chính thức + lấy channel ID/tên kênh.
+- [x] Project manager (topic/script/title/description/tags/media/voice/thumbnail/subtitle/video).
+- [x] AI script adapter.
+- [x] Voice/TTS adapter + quyền sử dụng voice.
+- [x] FFmpeg video assembly.
+- [x] Tạo/parse/validate SRT + VTT.
+- [x] Thumbnail brief/studio flow.
+- [x] Upload YouTube thật (private/unlisted/public + publishAt schedule).
+- [x] Analytics snapshot + upload history.
+- [x] Safety center + human approval gate trước upload.
+- [x] Backward compatible DB migration cho project dữ liệu cũ.
 
 ## Kiểm thử / Tests
 
