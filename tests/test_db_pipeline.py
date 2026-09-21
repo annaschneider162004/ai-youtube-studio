@@ -2,12 +2,24 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.db import Database
 from app.services.pipeline import PipelineManager
 
 
 class DatabaseAndPipelineTests(unittest.TestCase):
+    def _write_wav(self, path, duration_ms=500):
+        import wave
+
+        frame_rate = 16000
+        frame_count = int(frame_rate * (duration_ms / 1000))
+        with wave.open(str(path), 'wb') as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(frame_rate)
+            handle.writeframes(b'\x00\x00' * frame_count)
+
     def test_migrates_legacy_projects_table(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / 'legacy.db'
@@ -42,6 +54,8 @@ class DatabaseAndPipelineTests(unittest.TestCase):
             db = Database(db_path)
             columns = {row['name'] for row in db.conn.execute('PRAGMA table_info(projects)').fetchall()}
             self.assertIn('voice_profile', columns)
+            self.assertIn('voice_provider', columns)
+            self.assertIn('voice_settings_json', columns)
             self.assertIn('workflow_step', columns)
             self.assertIn('safety_report_json', columns)
 
@@ -72,6 +86,54 @@ class DatabaseAndPipelineTests(unittest.TestCase):
             self.assertEqual('approved', project['status'])
             latest = db.latest_pipeline(project_id)
             self.assertEqual('completed', latest['status'])
+
+    def test_generate_voice_pipeline_updates_project(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = Database(Path(temp_dir) / 'studio.db')
+            account_id = db.add_account('user@example.com', 'channel-1', 'Test Channel', '{}')
+            project_id = db.add_project(account_id, 'Project Voice', 'Topic Voice')
+            db.update_project(
+                project_id,
+                script='Xin chào từ Voice Studio',
+                voice_authorized=1,
+                voice_provider='sapi',
+                voice_settings_json=json.dumps(
+                    {
+                        'provider': 'sapi',
+                        'voice_profile': '',
+                        'language': 'vi-VN',
+                        'speed': 1.0,
+                        'pitch': 0.0,
+                        'emotion': '',
+                        'pause_ms': 150,
+                        'output_format': 'wav',
+                        'clone_enabled': False,
+                        'fit_strategy': 'speed',
+                        'sample_path': '',
+                        'text_source_path': '',
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            pipeline = PipelineManager(db)
+
+            def fake_generate_audio(_service, text, output_path, settings, **kwargs):
+                self.assertEqual('Xin chào từ Voice Studio', text)
+                self.assertEqual('wav', settings.output_format)
+                self._write_wav(output_path, duration_ms=600)
+                return Path(output_path)
+
+            with patch('app.services.pipeline.VoiceStudioService.generate_audio', autospec=True, side_effect=fake_generate_audio):
+                pipeline.start(project_id, 'generate_voice', {'output_dir': temp_dir})
+                pipeline._threads[project_id].join(timeout=10)
+
+            project = db.project(project_id)
+            latest = db.latest_pipeline(project_id)
+            self.assertEqual('completed', latest['status'])
+            self.assertEqual('needs_review', project['status'])
+            self.assertEqual('voice', project['workflow_step'])
+            self.assertTrue(project['voice_path'].endswith('.wav'))
+            self.assertTrue(Path(project['voice_path']).exists())
 
 
 if __name__ == '__main__':

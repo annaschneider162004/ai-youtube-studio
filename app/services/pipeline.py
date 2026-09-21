@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,12 +8,17 @@ from app.services.ai import AIProvider
 from app.services.safety import review
 from app.services.subtitles import make_srt
 from app.services.video_assembler import VideoAssembler
-from app.services.voice import VoiceProvider
+from app.services.voice import VoiceProvider, VoiceSettings, VoiceStudioService
 from app.services.youtube_service import YouTubeService
 
 
 class CancelledError(RuntimeError):
     pass
+
+
+def safe_slug(value, default='project'):
+    clean = re.sub(r'[^a-zA-Z0-9]+', '-', (value or '').strip()).strip('-').lower()
+    return clean or default
 
 
 class PipelineManager:
@@ -50,28 +56,37 @@ class PipelineManager:
             update_kwargs['workflow_step'] = workflow_step
         self.db.update_project(project_id, **update_kwargs)
 
+    def _completion_state(self, task_name, original_status, original_step):
+        mapping = {
+            'generate_script': ('needs_review', 'script'),
+            'preview_voice': (original_status, 'voice'),
+            'generate_voice': ('needs_review', 'voice'),
+            'generate_subtitles': ('needs_review', 'subtitle'),
+            'dub_video': ('needs_review', 'video'),
+            'thumbnail_brief': ('needs_review', 'thumbnail'),
+            'assemble_video': ('needs_review', 'video'),
+            'safety_check': ('needs_review', 'safety'),
+            'approve': ('approved', 'approval'),
+            'upload_video': ('published', 'upload'),
+        }
+        return mapping.get(task_name, (original_status or 'draft', original_step or 'workflow'))
+
     def _run(self, run_id, project_id, task_name, settings):
+        project_before = self.db.project(project_id)
+        original_status = project_before['status'] if project_before else 'draft'
+        original_step = project_before['workflow_step'] if project_before else 'project'
         try:
             with TemporaryDirectory(prefix='aiys-') as temp_dir:
                 self.db.set_pipeline_temp_paths(run_id, [temp_dir])
                 self._execute(run_id, project_id, task_name, settings, Path(temp_dir))
-                final_status = 'approved' if task_name == 'approve' else 'needs_review'
-                final_step = {
-                    'generate_script': 'script',
-                    'generate_subtitles': 'subtitle',
-                    'thumbnail_brief': 'thumbnail',
-                    'assemble_video': 'video',
-                    'safety_check': 'safety',
-                    'approve': 'approval',
-                    'upload_video': 'upload',
-                }.get(task_name, 'workflow')
+                final_status, final_step = self._completion_state(task_name, original_status, original_step)
                 if task_name == 'upload_video':
                     project_row = self.db.project(project_id)
                     final_status = 'scheduled' if settings.get('publish_at') else 'published'
-                    if project_row and project_row['status'] == 'approved':
+                    if project_row:
                         self.db.update_project(project_id, status=final_status, workflow_step='upload', progress=100)
-                    else:
-                        self.db.update_project(project_id, status=final_status, workflow_step='upload', progress=100)
+                elif task_name == 'preview_voice':
+                    self.db.update_project(project_id, status=final_status, workflow_step=final_step, progress=100)
                 self.db.update_pipeline_run(run_id, status='completed', progress=100, message='Hoàn tất.')
                 self.db.update_project(project_id, status=final_status, progress=100, workflow_step=final_step)
         except CancelledError as exc:
@@ -84,6 +99,35 @@ class PipelineManager:
             self.db.update_project(project_id, status='failed', progress=0, last_error=str(exc))
         finally:
             self._threads.pop(project_id, None)
+
+    def _voice_settings(self, project):
+        settings = VoiceSettings.from_project(project)
+        if not settings.voice_profile:
+            settings.voice_profile = project['voice_profile'] or ''
+        if not settings.provider:
+            settings.provider = project['voice_provider'] or 'sapi'
+        if not settings.text_source_path:
+            settings.text_source_path = project['text_source_path'] or ''
+        if not settings.sample_path:
+            settings.sample_path = project['voice_sample_path'] or ''
+        return settings
+
+    def _voice_provider(self, project, settings, voice_settings):
+        return VoiceProvider(
+            settings.get('voice_endpoint', ''),
+            settings.get('voice_api_key', ''),
+            voice_settings.voice_profile or settings.get('voice_id', ''),
+            provider_type=voice_settings.provider,
+            ffmpeg_path=settings.get('ffmpeg_path', 'ffmpeg'),
+            http_timeout=settings.get('voice_http_timeout', 90),
+        )
+
+    def _output_dir(self, settings):
+        return Path(settings.get('output_dir') or 'data/outputs')
+
+    def _project_file(self, output_dir, project_id, project_name, suffix, label):
+        stem = safe_slug(project_name or f'project-{project_id}', default=f'project-{project_id}')
+        return output_dir / f'{stem}_{project_id}_{label}{suffix}'
 
     def _execute(self, run_id, project_id, task_name, settings, temp_dir):
         project = self.db.project(project_id)
@@ -103,16 +147,96 @@ class PipelineManager:
             self._update(run_id, project_id, 100, 'Đã tạo script.', 'script')
             return
 
+        if task_name == 'preview_voice' or task_name == 'generate_voice':
+            voice_settings = self._voice_settings(project)
+            provider = self._voice_provider(project, settings, voice_settings)
+            service = VoiceStudioService(provider, settings.get('ffmpeg_path', 'ffmpeg'))
+            output_dir = self._output_dir(settings)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            suffix = '.mp3' if voice_settings.output_format == 'mp3' else '.wav'
+            label = 'preview_voice' if task_name == 'preview_voice' else 'voice'
+            output_path = self._project_file(output_dir, project_id, project['name'], suffix, label)
+            self._update(
+                run_id,
+                project_id,
+                10,
+                'Đang preview voice…' if task_name == 'preview_voice' else 'Đang tạo voice…',
+                'voice',
+            )
+            self._check_cancel(project_id)
+            source_path = project['srt_path'] or project['text_source_path'] or voice_settings.text_source_path or ''
+            audio_path = service.generate_audio(
+                project['script'],
+                output_path,
+                voice_settings,
+                authorized=bool(project['voice_authorized']),
+                source_path=source_path,
+                preview=task_name == 'preview_voice',
+                progress_callback=lambda percent, message: self._update(run_id, project_id, percent, message, 'voice'),
+                cancel_callback=lambda: self._check_cancel(project_id),
+            )
+            self.db.update_project(
+                project_id,
+                voice_path=str(audio_path),
+                voice_profile=voice_settings.voice_profile,
+                voice_provider=voice_settings.provider,
+                voice_settings_json=voice_settings.to_json(),
+                voice_sample_path=voice_settings.sample_path,
+                text_source_path=voice_settings.text_source_path,
+            )
+            self._update(run_id, project_id, 100, f'Đã tạo voice: {audio_path}', 'voice')
+            return
+
         if task_name == 'generate_subtitles':
             self._update(run_id, project_id, 15, 'Đang tạo file SRT…', 'subtitle')
             self._check_cancel(project_id)
             if not (project['script'] or '').strip():
                 raise RuntimeError('Project chưa có script để tạo subtitle.')
-            output_dir = Path(settings.get('output_dir') or 'data/outputs')
-            output_path = output_dir / f'project_{project_id}.srt'
+            output_dir = self._output_dir(settings)
+            output_path = self._project_file(output_dir, project_id, project['name'], '.srt', 'subtitles')
             srt_path = make_srt(project['script'], output_path)
             self.db.update_project(project_id, srt_path=srt_path)
             self._update(run_id, project_id, 100, f'Đã tạo subtitle: {srt_path}', 'subtitle')
+            return
+
+        if task_name == 'dub_video':
+            self._update(run_id, project_id, 10, 'Đang chuẩn bị lồng tiếng video…', 'voice')
+            self._check_cancel(project_id)
+            if not project['media_path']:
+                raise RuntimeError('Project chưa có media_path/video nguồn để lồng tiếng.')
+            voice_settings = self._voice_settings(project)
+            provider = self._voice_provider(project, settings, voice_settings)
+            service = VoiceStudioService(provider, settings.get('ffmpeg_path', 'ffmpeg'))
+            output_dir = self._output_dir(settings)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            audio_suffix = '.mp3' if voice_settings.output_format == 'mp3' else '.wav'
+            audio_output = self._project_file(output_dir, project_id, project['name'], audio_suffix, 'dub_track')
+            video_output = self._project_file(output_dir, project_id, project['name'], '.mp4', 'dubbed')
+            source_path = project['srt_path'] or project['text_source_path'] or voice_settings.text_source_path or ''
+            result = service.dub_video(
+                project['media_path'],
+                project['script'],
+                audio_output,
+                video_output,
+                voice_settings,
+                authorized=bool(project['voice_authorized']),
+                source_path=source_path,
+                progress_callback=lambda percent, message: self._update(run_id, project_id, percent, message, 'video'),
+                cancel_callback=lambda: self._check_cancel(project_id),
+            )
+            if result['warnings']:
+                self.db.append_pipeline_log(run_id, 'Cảnh báo dubbing: ' + ' | '.join(result['warnings']))
+            self.db.update_project(
+                project_id,
+                voice_path=str(result['audio_path']),
+                video_path=str(result['video_path']),
+                voice_profile=voice_settings.voice_profile,
+                voice_provider=voice_settings.provider,
+                voice_settings_json=voice_settings.to_json(),
+                voice_sample_path=voice_settings.sample_path,
+                text_source_path=voice_settings.text_source_path,
+            )
+            self._update(run_id, project_id, 100, f'Đã tạo video lồng tiếng: {result["video_path"]}', 'video')
             return
 
         if task_name == 'thumbnail_brief':
@@ -137,22 +261,24 @@ class PipelineManager:
             if not project['media_path']:
                 raise RuntimeError('Project chưa có media_path để ghép video.')
             if not project['voice_path']:
-                provider = VoiceProvider(
-                    settings.get('voice_endpoint', ''),
-                    settings.get('voice_api_key', ''),
-                    project['voice_profile'] or settings.get('voice_id', ''),
-                )
-                output_voice = temp_dir / f'project_{project_id}_voice.wav'
-                provider.generate(
+                voice_settings = self._voice_settings(project)
+                provider = self._voice_provider(project, settings, voice_settings)
+                service = VoiceStudioService(provider, settings.get('ffmpeg_path', 'ffmpeg'))
+                output_voice = temp_dir / f'project_{project_id}_voice.{voice_settings.output_format}'
+                source_path = project['srt_path'] or project['text_source_path'] or voice_settings.text_source_path or ''
+                generated = service.generate_audio(
                     project['script'],
                     output_voice,
+                    voice_settings,
                     authorized=bool(project['voice_authorized']),
-                    subtitles=project['srt_path'] or None,
+                    source_path=source_path,
+                    progress_callback=lambda percent, message: self._update(run_id, project_id, percent, message, 'voice'),
+                    cancel_callback=lambda: self._check_cancel(project_id),
                 )
-                self.db.update_project(project_id, voice_path=str(output_voice))
+                self.db.update_project(project_id, voice_path=str(generated))
                 project = self.db.project(project_id)
-            output_dir = Path(settings.get('output_dir') or 'data/outputs')
-            output_file = output_dir / f'project_{project_id}.mp4'
+            output_dir = self._output_dir(settings)
+            output_file = self._project_file(output_dir, project_id, project['name'], '.mp4', 'assembled')
             assembler = VideoAssembler(settings.get('ffmpeg_path', 'ffmpeg'))
             assembler.assemble(
                 project['media_path'],
