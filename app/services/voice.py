@@ -779,7 +779,7 @@ def probe_audio_duration_ms(path, ffmpeg_path='ffmpeg'):
                 rate = handle.getframerate() or 1
                 return int((frames / rate) * 1000)
         except (wave.Error, EOFError):
-            return None
+            pass
     ffprobe = resolve_ffprobe(ffmpeg_path)
     if not ffprobe:
         return None

@@ -900,6 +900,7 @@ class VoiceStudioPage(QWidget):
             self.progress.setValue(0)
             self.log.setPlainText('')
             return
+        project = self.db.project(project['id']) or project
         latest = self.db.latest_pipeline(project['id'])
         self.output_path.setText(project['voice_path'] or '-')
         self.status.setText(
